@@ -38,7 +38,7 @@ chmod +x update.sh backup.sh
 touch .env; chmod 600 .env
 setkv() { grep -q "^$1=" .env && sed -i "s|^$1=.*|$1=$2|" .env || echo "$1=$2" >> .env; }
 setkv DOMAIN "$DOMAIN"
-grep -q "^GEMINI_MODEL=" .env || setkv GEMINI_MODEL gemini-2.5-flash
+grep -q "^GEMINI_MODEL=" .env || setkv GEMINI_MODEL "gemini-3.5-flash,gemini-flash-lite-latest"
 [ -n "${GEMINI_API_KEY:-}" ] && setkv GEMINI_API_KEY "$GEMINI_API_KEY"
 [ -n "${FAMILY_PASSCODE:-}" ] && setkv FAMILY_PASSCODE "$FAMILY_PASSCODE"
 

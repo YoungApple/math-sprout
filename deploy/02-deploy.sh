@@ -18,7 +18,7 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --port 8080 --memory 1Gi --cpu 1 --timeout 300 \
   --min-instances 0 --max-instances 3 \
-  --set-env-vars "GCS_BUCKET=$BUCKET,GEMINI_MODEL=gemini-2.5-flash" \
+  --set-env-vars "GCS_BUCKET=$BUCKET,GEMINI_MODEL=gemini-flash-latest" \
   --set-secrets "$SECRETS"
 
 URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format='value(status.url)')

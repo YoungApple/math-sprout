@@ -73,12 +73,45 @@ Tasks:
    Double-check every variant's arithmetic before answering.
 All natural-language output must be Simplified Chinese.`;
 
+/** Models tried in order; override with GEMINI_MODEL="a,b,c". Aliases track the newest stable release. */
+const DEFAULT_MODELS = ["gemini-3.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite", "gemini-flash-latest"];
+
 export async function diagnoseMistake(image: Buffer, mimeType: string, userNote?: string): Promise<Diagnosis> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
   const ai = new GoogleGenAI({ apiKey });
-  const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+  const models = (process.env.GEMINI_MODEL ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  const chain = [...new Set([...models, ...DEFAULT_MODELS])];
 
+  let lastErr: unknown;
+  for (const model of chain) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const text = await callModel(ai, model, image, mimeType, userNote);
+        return sanitize(JSON.parse(text) as Diagnosis);
+      } catch (err) {
+        lastErr = err;
+        const code = errorCode(err);
+        // Model missing for this key -> try next model immediately; overload/rate-limit -> brief backoff, then retry once.
+        if (code === 404) break;
+        if (code === 429 || code === 503 || code === 500) {
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("diagnosis failed");
+}
+
+function errorCode(err: unknown): number | undefined {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = msg.match(/"code"\s*:\s*(\d{3})/) ?? msg.match(/\b(404|429|500|503)\b/);
+  return m ? Number(m[1]) : undefined;
+}
+
+async function callModel(ai: GoogleGenAI, model: string, image: Buffer, mimeType: string, userNote?: string): Promise<string> {
   const res = await ai.models.generateContent({
     model,
     contents: [
@@ -97,11 +130,9 @@ export async function diagnoseMistake(image: Buffer, mimeType: string, userNote?
       temperature: 0.4,
     },
   });
-
   const text = res.text;
   if (!text) throw new Error("Gemini returned an empty response");
-  const parsed = JSON.parse(text) as Diagnosis;
-  return sanitize(parsed);
+  return text;
 }
 
 /** Defensive cleanup: keep exactly one variant per level, in order; clamp grade. */

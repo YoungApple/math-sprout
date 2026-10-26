@@ -9,7 +9,7 @@ latency and cost; free-form text output breaks parsing.
 ## Decision
 Use a single `generateContent` call with `responseMimeType: application/json` and a strict
 `responseSchema`. A sanitizer enforces invariants the schema cannot (one variant per level,
-grade clamp, SVG prefix). Model is configurable (`GEMINI_MODEL`); default `gemini-2.5-flash`.
+grade clamp, SVG prefix). Model is configurable (`GEMINI_MODEL`); default `gemini-flash-latest`.
 
 ## Consequences
 - ~10–15 s end-to-end on Flash; acceptable for capture flow.
