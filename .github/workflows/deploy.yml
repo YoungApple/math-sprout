@@ -53,10 +53,21 @@ jobs:
       - name: Roll out on the VM over SSH
         if: ${{ vars.VM_HOST != '' }}
         uses: appleboy/ssh-action@v1
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FAMILY_PASSCODE: ${{ secrets.FAMILY_PASSCODE }}
+          DOMAIN: ${{ vars.DOMAIN }}
         with:
           host: ${{ vars.VM_HOST }}
           username: ${{ vars.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
-          script: /opt/math-sprout/update.sh
+          envs: GEMINI_API_KEY,FAMILY_PASSCODE,DOMAIN
+          script: |
+            # First deploy bootstraps the VM (installs Docker, writes .env from repo secrets); later runs just update.
+            if [ ! -f /opt/math-sprout/docker-compose.yml ]; then
+              curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/vm/install.sh | bash
+            else
+              /opt/math-sprout/update.sh
+            fi
       - if: ${{ vars.VM_HOST == '' }}
         run: echo "VM_HOST not configured; skipping deploy (image is published to GHCR)."

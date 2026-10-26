@@ -1,37 +1,62 @@
 #!/usr/bin/env bash
-# Run ON the VM once (as a sudo-capable user). Lays out /opt/math-sprout and starts the stack.
-# Prerequisite: Docker Engine + compose plugin present on the VM (Debian/Ubuntu: apt package `docker.io`
-# and `docker-compose-v2`, or your distro's equivalent). The script does not install Docker itself.
+# One-shot installer. Run ON the VM (Debian/Ubuntu, sudo-capable user):
 #
-# Usage:
 #   curl -fsSL https://raw.githubusercontent.com/YoungApple/math-sprout/main/deploy/vm/install.sh \
-#     | DOMAIN=math.watchparty.cn bash
+#     | GEMINI_API_KEY=<key> FAMILY_PASSCODE=<code> DOMAIN=math.watchparty.cn bash
+#
+# What it does: installs Docker from the distro repos if missing, lays out /opt/math-sprout,
+# writes .env from the variables above, opens 80/443 in ufw if active, and starts the stack.
+# Re-running is safe; existing .env values are kept unless new ones are passed.
 set -euo pipefail
 DOMAIN="${DOMAIN:-math.watchparty.cn}"
 DIR=/opt/math-sprout
 REPO_RAW="https://raw.githubusercontent.com/YoungApple/math-sprout/main/deploy/vm"
+SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
-command -v docker >/dev/null || { echo "docker not found; install Docker Engine + compose plugin first"; exit 1; }
-docker compose version >/dev/null 2>&1 || { echo "docker compose plugin not found"; exit 1; }
+if ! command -v docker >/dev/null 2>&1; then
+  echo "==> Installing Docker Engine + compose plugin from distro packages"
+  if command -v apt-get >/dev/null; then
+    $SUDO apt-get update -qq
+    $SUDO apt-get install -y -qq docker.io docker-compose-v2 curl >/dev/null || $SUDO apt-get install -y -qq docker.io docker-compose-plugin curl >/dev/null
+  elif command -v dnf >/dev/null; then
+    $SUDO dnf install -y docker docker-compose-plugin
+  else
+    echo "Unsupported distro: install Docker Engine + compose plugin manually, then re-run."; exit 1
+  fi
+  $SUDO systemctl enable --now docker
+  $SUDO usermod -aG docker "$USER" || true
+fi
+docker compose version >/dev/null 2>&1 || { echo "docker compose plugin missing (try: sudo apt-get install docker-compose-v2)"; exit 1; }
 
-sudo mkdir -p "$DIR/data" && sudo chown -R "$USER" "$DIR"
+$SUDO mkdir -p "$DIR/data" && $SUDO chown -R "$USER" "$DIR"
 cd "$DIR"
 for f in docker-compose.yml Caddyfile update.sh backup.sh; do curl -fsSLo "$f" "$REPO_RAW/$f"; done
 chmod +x update.sh backup.sh
-[ -f .env ] || cat > .env <<ENV
-GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
-FAMILY_PASSCODE=
-DOMAIN=$DOMAIN
-ENV
-chmod 600 .env
 
-# Open 80/443 on the host firewall if ufw is active (GCP VPC firewall must also allow them).
-if command -v ufw >/dev/null && sudo ufw status | grep -q "Status: active"; then
-  sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
+# .env: create or update only the keys that were passed in.
+touch .env; chmod 600 .env
+setkv() { grep -q "^$1=" .env && sed -i "s|^$1=.*|$1=$2|" .env || echo "$1=$2" >> .env; }
+setkv DOMAIN "$DOMAIN"
+grep -q "^GEMINI_MODEL=" .env || setkv GEMINI_MODEL gemini-2.5-flash
+[ -n "${GEMINI_API_KEY:-}" ] && setkv GEMINI_API_KEY "$GEMINI_API_KEY"
+[ -n "${FAMILY_PASSCODE:-}" ] && setkv FAMILY_PASSCODE "$FAMILY_PASSCODE"
+
+if command -v ufw >/dev/null && $SUDO ufw status 2>/dev/null | grep -q "Status: active"; then
+  $SUDO ufw allow 80/tcp >/dev/null && $SUDO ufw allow 443/tcp >/dev/null
 fi
 
-echo
-echo "1) Edit $DIR/.env  (GEMINI_API_KEY, FAMILY_PASSCODE)"
-echo "2) cd $DIR && docker compose up -d"
-echo "3) Make sure DNS A record $DOMAIN -> this VM's public IP exists; Caddy will fetch the certificate automatically."
+# Nightly backup at 03:00 if not already scheduled.
+( crontab -l 2>/dev/null | grep -q "$DIR/backup.sh" ) || ( crontab -l 2>/dev/null; echo "0 3 * * * $DIR/backup.sh >> $DIR/backup.log 2>&1" ) | crontab -
+
+if grep -q "^GEMINI_API_KEY=.\+" .env; then
+  echo "==> Starting stack"
+  $SUDO docker compose pull app
+  $SUDO docker compose up -d
+  sleep 5
+  $SUDO docker compose ps
+  echo
+  echo "✅ Up. Caddy is requesting the certificate for https://$DOMAIN (needs DNS A record -> this VM, ports 80/443 open)."
+  echo "   Logs: cd $DIR && sudo docker compose logs -f caddy app"
+else
+  echo "⚠️  GEMINI_API_KEY not set. Edit $DIR/.env then run: cd $DIR && sudo docker compose up -d"
+fi
