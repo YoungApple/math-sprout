@@ -1,0 +1,13 @@
+name = "math-sprout-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Set ORIGIN to the *.run.app URL printed by 02-deploy.sh.
+[vars]
+ORIGIN = "https://REPLACE_ME.a.run.app"
+
+# Route all traffic for your subdomain through this Worker.
+# Requires the zone to be on Cloudflare (free plan, nameservers moved to Cloudflare).
+routes = [
+  { pattern = "math.example.com/*", zone_name = "example.com" }
+]
