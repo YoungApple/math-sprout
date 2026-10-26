@@ -9,7 +9,7 @@ variant questions (L1 numbers / L2 context / L3 reverse) → Ebbinghaus review q
 - `@google/genai` with Structured Outputs (`responseSchema`) — one multimodal call per mistake
 - libSQL (`@libsql/client`): SQLite file in dev, Turso in prod; same SQL
 - Images: local disk in dev, GCS in prod; always served via /api/images on our own host
-- Cloud Run (asia-east1) fronted by a free Cloudflare Worker reverse proxy on your domain
+- Docker Compose + Caddy on a GCE VM (asia-east1); GHCR images via GitHub Actions
 
 ## Local development
 
@@ -41,6 +41,7 @@ src/lib/
   storage.ts    Local FS / GCS abstraction
   auth.ts       Optional family passcode gate
 deploy/
+  vm/               docker-compose.yml, Caddyfile, install/update/backup scripts (primary)
   env.sh                        PROJECT_ID / REGION / DOMAIN / BUCKET
   01-setup-gcp.sh               APIs, bucket, secrets, service account (run once)
   02-deploy.sh                  Cloud Build + Cloud Run deploy (run per release)
@@ -49,39 +50,42 @@ deploy/
   04-optional-static-ip-lb.sh   Paid fallback: GCP LB + static IP + managed cert
 ```
 
-## Deploy (free tier, reachable from mainland China)
+## Deploy
 
-Everything below fits in free tiers: Cloud Run, Cloudflare Free + Workers, Turso, GCS
-Always-Free (us-west1), Secret Manager, Artifact Registry, Gemini API free tier.
-The only thing worth paying for is Gemini pay-as-you-go (~$0.3-1/month) so homework
-photos are not used for model improvement.
-
-Why this shape: `*.run.app`, `ghs.googlehosted.com` and `storage.googleapis.com` are
-blocked in mainland China, but Cloudflare's edge and the Cloud Run service itself are
-reachable. So a free Cloudflare Worker reverse-proxies `math.<your-domain>` to the
-`*.run.app` origin, and photos are always served through `/api/images/...` on our own host.
+Primary target (see [ADR 0001](docs/adr/0001-hosting-and-china-reachability.md)): the owner's
+GCE VM in asia-east1, served at **https://math.watchparty.cn** with Docker Compose + Caddy.
+Images are built by GitHub Actions and published to GHCR; the VM pulls them.
 
 ```bash
-# 0. Move your domain's nameservers to Cloudflare (Free plan). CNAME-only setup is paid.
-#    In Cloudflare DNS add a proxied placeholder:  AAAA  math  100::   (orange cloud)
-#    SSL/TLS mode: Full.
-# 1. edit deploy/env.sh (PROJECT_ID, DOMAIN)
-./deploy/01-setup-gcp.sh          # APIs, bucket, secrets, service account (run once)
-./deploy/02-deploy.sh             # Cloud Build + Cloud Run, prints https://...run.app
-./deploy/03-domain-cloudflare.sh  # publishes the Worker + route math.<your-domain>/*
-# Optional paid upgrade if Cloudflare is flaky from your ISP (~$18/mo, static Taiwan IP):
-./deploy/04-optional-static-ip-lb.sh
+# On the VM (once). Needs Docker Engine + compose plugin already installed.
+curl -fsSL https://raw.githubusercontent.com/YoungApple/math-sprout/main/deploy/vm/install.sh \
+  | DOMAIN=math.watchparty.cn bash
+nano /opt/math-sprout/.env          # GEMINI_API_KEY, FAMILY_PASSCODE
+cd /opt/math-sprout && docker compose up -d
+# DNSPod: A record  math  ->  <VM public IP>
 ```
 
-Database options for the `database-url` secret:
+Continuous deploy: set repo variables `VM_HOST`, `VM_USER` and secret `VM_SSH_KEY`
+(a dedicated key whose public half is in the VM's `~/.ssh/authorized_keys`); every push to
+`main` then builds, publishes and runs `update.sh` on the VM.
 
-- **Turso (recommended, free tier)**: `turso db create math-sprout --location hkg`, then
-  `turso db show math-sprout --url` and `turso db tokens create math-sprout`.
-- Leave the secret unset to fall back to an ephemeral SQLite file inside the container
-  (fine for smoke-testing, data is lost on redeploy).
+Fallbacks (no code changes, env only):
 
-Check mainland reachability after DNS propagates with a multi-province HTTP probe such as
-ping.chinaz.com or boce.com.
+- **Zero-card**: Vercel Hobby + Turso (`DATABASE_URL=libsql://…`) behind the free Cloudflare
+  Worker proxy in `deploy/cloudflare-proxy/`.
+- **GCP with billing**: Cloud Run free tier + GCS (`deploy/01-03*.sh`).
+
+Why these shapes: `*.run.app`, `ghs.googlehosted.com`, `*.vercel.app` and
+`storage.googleapis.com` are blocked or unstable from mainland China; a customer-owned GCP IP
+or Cloudflare's edge is reachable. Photos are therefore always served via `/api/images/*` on
+our own host.
+
+## Spec-driven roadmap
+
+Every feature starts as a spec in [`docs/specs/`](docs/specs/README.md) and is tracked by a
+GitHub issue labelled `spec` (milestones = phases). `scripts/bootstrap-github.sh` creates
+the repo, labels, milestones and issues idempotently. Architecture decisions live in
+[`docs/adr/`](docs/adr/).
 
 ## Mastery state machine
 
@@ -94,7 +98,7 @@ PENDING ──L1 correct──▶ CONSOLIDATING ──L2 & L3 correct──▶ M
 
 Intervals after each successful round: 1, 2, 4, 7, 15, 30 days.
 
-## Roadmap
+## Roadmap (see docs/specs for details)
 
 - [ ] Whole-page capture with Gemini bounding boxes → multiple mistakes per photo
 - [ ] Clean-stem rendering (handwriting removed) for printable worksheets

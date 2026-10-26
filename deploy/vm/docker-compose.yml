@@ -1,0 +1,32 @@
+# Single-VM deployment: Caddy (auto HTTPS via Let's Encrypt) -> app (Next.js standalone).
+# SQLite DB + uploaded photos live in ./data; back it up nightly with backup.sh.
+services:
+  app:
+    image: ghcr.io/youngapple/math-sprout:latest   # built by GitHub Actions (.github/workflows/deploy.yml)
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: file:/data/math-sprout.db
+      UPLOAD_DIR: /data/uploads
+    volumes:
+      - ./data:/data
+    expose: ["8080"]
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN:-math.watchparty.cn}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+
+volumes:
+  caddy_data:
+  caddy_config:
