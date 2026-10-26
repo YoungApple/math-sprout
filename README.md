@@ -39,7 +39,8 @@ src/lib/
   repo.ts       Data access (mistakes / variants / attempts)
   db.ts         libSQL client + idempotent schema
   storage.ts    Local FS / GCS abstraction
-  auth.ts       Optional family passcode gate
+  auth.ts       Passcode check helper for API routes
+src/middleware.ts Family passcode gate for all pages/APIs (redirects to /login)
 deploy/
   vm/               docker-compose.yml, Caddyfile, install/update/backup scripts (primary)
   env.sh                        PROJECT_ID / REGION / DOMAIN / BUCKET

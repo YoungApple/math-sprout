@@ -28,7 +28,8 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 docker compose version >/dev/null 2>&1 || { echo "docker compose plugin missing (try: sudo apt-get install docker-compose-v2)"; exit 1; }
 
-$SUDO mkdir -p "$DIR/data" && $SUDO chown -R "$USER" "$DIR"
+$SUDO mkdir -p "$DIR/data" "$DIR/backups" && $SUDO chown -R "$USER" "$DIR"
+$SUDO chown -R 10001:10001 "$DIR/data"   # uid of the non-root user inside the app image
 cd "$DIR"
 for f in docker-compose.yml Caddyfile update.sh backup.sh; do curl -fsSLo "$f" "$REPO_RAW/$f"; done
 chmod +x update.sh backup.sh
