@@ -34,11 +34,18 @@ cd "$DIR"
 for f in docker-compose.yml Caddyfile update.sh backup.sh; do curl -fsSLo "$f" "$REPO_RAW/$f"; done
 chmod +x update.sh backup.sh
 
-# .env: create or update only the keys that were passed in.
+# .env: create or update only the keys that were passed in (safe for &, |, \ in secrets).
 touch .env; chmod 600 .env
-setkv() { grep -q "^$1=" .env && sed -i "s|^$1=.*|$1=$2|" .env || echo "$1=$2" >> .env; }
+setkv() {
+  local tmp
+  tmp=$(mktemp)
+  grep -v "^$1=" .env > "$tmp" || true
+  printf '%s=%s\n' "$1" "$2" >> "$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" .env
+}
 setkv DOMAIN "$DOMAIN"
-grep -q "^GEMINI_MODEL=" .env || setkv GEMINI_MODEL "gemini-3.5-flash,gemini-flash-lite-latest"
+grep -q "^GEMINI_MODEL=" .env || setkv GEMINI_MODEL "gemini-3.5-flash,gemini-flash-latest,gemini-flash-lite-latest,gemini-2.5-flash-lite"
 [ -n "${GEMINI_API_KEY:-}" ] && setkv GEMINI_API_KEY "$GEMINI_API_KEY"
 [ -n "${FAMILY_PASSCODE:-}" ] && setkv FAMILY_PASSCODE "$FAMILY_PASSCODE"
 

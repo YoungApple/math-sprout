@@ -1,6 +1,6 @@
 import type { ReviewStatus } from "@/lib/review";
 
-const LABELS: Record<ReviewStatus, { text: string; cls: string }> = {
+export const STATUS_LABELS: Record<ReviewStatus, { text: string; cls: string }> = {
   PENDING: { text: "待攻克", cls: "bg-rose-100 text-rose-700" },
   CONSOLIDATING: { text: "巩固中", cls: "bg-amber-100 text-amber-700" },
   MASTERED: { text: "已掌握", cls: "bg-sprout-100 text-sprout-700" },
@@ -15,6 +15,6 @@ export const ERROR_LABELS: Record<string, string> = {
 };
 
 export function StatusBadge({ status }: { status: ReviewStatus }) {
-  const l = LABELS[status] ?? LABELS.PENDING;
-  return <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${l.cls}`}>{l.text}</span>;
+  const l = STATUS_LABELS[status] ?? STATUS_LABELS.PENDING;
+  return <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${l.cls}`}>{l.text}</span>;
 }

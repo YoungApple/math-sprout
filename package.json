@@ -4,11 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build",
+    "build": "next build && cp -r public .next/standalone/ && cp -r .next/static .next/standalone/.next/",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx tests/review.test.ts"
+    "test": "node --import tsx tests/math-answer.test.ts && node --import tsx tests/review.test.ts && node --import tsx tests/gemini.test.ts && node --import tsx tests/repo-vertical.test.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.14.0",

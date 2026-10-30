@@ -28,6 +28,9 @@ body {
 .math-text p {
   @apply my-1 leading-relaxed;
 }
+.math-inline {
+  @apply inline;
+}
 .katex {
   font-size: 1.05em;
 }

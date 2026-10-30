@@ -1,27 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePasscode, sanitizeNextPath } from "@/lib/auth";
+
+const PUBLIC_EXACT_PATHS = new Set([
+  "/login",
+  "/api/login",
+  "/api/health",
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/favicon.ico",
+]);
 
 /**
  * Family passcode gate for every page and API route when FAMILY_PASSCODE is set.
- * The cookie is issued by /api/login; APIs additionally accept the x-family-passcode header.
+ * Session cookies are issued by /api/login; APIs additionally accept x-family-passcode.
  */
 export function middleware(req: NextRequest) {
-  const expected = process.env.FAMILY_PASSCODE;
-  if (!expected) return NextResponse.next();
+  const { pathname, search } = req.nextUrl;
+  if (PUBLIC_EXACT_PATHS.has(pathname) || pathname.startsWith("/_next/")) {
+    return NextResponse.next();
+  }
 
-  const { pathname } = req.nextUrl;
-  const cookie = req.cookies.get("family_passcode")?.value;
-  const header = req.headers.get("x-family-passcode");
-  if (cookie === expected || header === expected) return NextResponse.next();
+  const denied = requirePasscode(req);
+  if (!denied) return NextResponse.next();
 
   if (pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "passcode required" }, { status: 401 });
+    return denied;
   }
+
   const url = req.nextUrl.clone();
   url.pathname = "/login";
-  url.searchParams.set("next", pathname);
+  url.search = "";
+  url.searchParams.set("next", sanitizeNextPath(`${pathname}${search}`));
   return NextResponse.redirect(url);
 }
 
 export const config = {
-  matcher: ["/((?!login|api/login|_next/|manifest.webmanifest|icon.svg|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon\\.ico$).*)"],
 };

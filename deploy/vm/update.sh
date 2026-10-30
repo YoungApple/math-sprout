@@ -6,4 +6,4 @@ sudo docker compose pull app
 sudo docker compose up -d
 sudo docker image prune -f >/dev/null
 sleep 3
-curl -fsS -o /dev/null -w "health=%{http_code}\n" "https://${DOMAIN:-math.watchparty.cn}/api/mistakes" || true
+curl -fsS -o /dev/null -w "health=%{http_code}\n" "https://${DOMAIN:-math.watchparty.cn}/api/health" || true
