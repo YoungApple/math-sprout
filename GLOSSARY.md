@@ -1,11 +1,25 @@
 # MathSprout (题芽)
 
-AI-guided primary-school math mistake notebook that diagnoses reasoning breakpoints, scaffolds discovery with Socratic hints, and proves durable mastery through variant challenges and spaced review.
+AI-guided primary-school math mistake notebook that checks whole homework pages, diagnoses reasoning breakpoints, scaffolds discovery with Socratic hints, and proves durable mastery through variant challenges and spaced review.
+
+## Homework Check & Taxonomy
+
+**Homework Check**:
+A whole-page multimodal scan of a photographed worksheet or test that segments each problem (`box_2d` normalized `0..1000`), extracts the child's written answer, verifies the canonical answer and verdict deterministically, and allows selective batch import into the mistake notebook.
+_Avoid_: Raw OCR dump, unverified grading
+
+**Check Verdict**:
+The per-problem outcome on a checked homework page: `CORRECT` (equivalent mathematical value and compatible unit), `WRONG` (calculation, concept, unit, or perception slip), or `BLANK` (left unanswered).
+_Avoid_: Binary pass/fail
+
+**Curriculum Domain**:
+One of the four top-level primary-school mathematics domains from the Chinese National Curriculum Standards (`数与代数`, `图形与几何`, `统计与概率`, `综合与实践`), automatically prefixed onto every mistake's `<领域>/<题型>` category.
+_Avoid_: Arbitrary folder, unnormalized free-text tag
 
 ## Diagnosis & Scaffolding
 
 **Mistake**:
-A captured primary-school math problem that the child answered incorrectly, paired with its original worksheet photo, diagnosis, hints, variants, and review state.
+A captured primary-school math problem queued for guided mastery, paired with its worksheet crop/photo, diagnosis, hints, variants, curriculum metadata (`grade`, `term`, `source`, `category`), and spaced-review state.
 _Avoid_: Question, item, post, ticket
 
 **Breakpoint**:

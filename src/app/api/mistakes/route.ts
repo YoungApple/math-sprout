@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash, randomUUID } from "node:crypto";
-import { diagnoseMistake } from "@/lib/gemini";
-import { createMistake, findMistakeBySha256, getMistake, listMistakes } from "@/lib/repo";
+import { diagnoseMistake, type ErrorCategory } from "@/lib/gemini";
+import type { CheckedProblemItem } from "@/lib/homework-check";
+import {
+  createMistake,
+  findMistakeBySha256,
+  getMistake,
+  getMistakeFacets,
+  listMistakes,
+} from "@/lib/repo";
 import type { ReviewStatus } from "@/lib/review";
 import { deleteImage, detectImageMime, putImage } from "@/lib/storage";
 import { requirePasscode } from "@/lib/auth";
+import type { MathDomain } from "@/lib/taxonomy";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const HEIC_BRANDS = new Set(["heic", "heix", "hevc", "hevx", "mif1", "msf1"]);
 
 function isHeicBuffer(bytes: Buffer): boolean {
@@ -35,22 +43,54 @@ function friendlyDiagnosisError(err: unknown): string {
   return "AI 暂时无法识别这道题，请对准单道错题重拍一张清晰照片再试";
 }
 
-/** GET /api/mistakes?due=1&status=...&category=... — list mistakes. */
+/**
+ * GET /api/mistakes — list mistakes with multi-dimensional filters, plus optional `?facets=1`.
+ */
 export async function GET(req: NextRequest) {
   const denied = requirePasscode(req);
   if (denied) return denied;
 
-  const due = req.nextUrl.searchParams.get("due") === "1";
-  const category = req.nextUrl.searchParams.get("category") || undefined;
-  const status = (req.nextUrl.searchParams.get("status") || undefined) as ReviewStatus | undefined;
+  const sp = req.nextUrl.searchParams;
+  const due = sp.get("due") === "1";
+  const status = (sp.get("status") || undefined) as ReviewStatus | undefined;
+  const errorCategory = (sp.get("errorCategory") || undefined) as ErrorCategory | undefined;
+  const domain = (sp.get("domain") || undefined) as MathDomain | undefined;
+  const category = sp.get("category") || undefined;
+  const tag = sp.get("tag") || undefined;
+  const gradeRaw = sp.get("grade")?.trim();
+  const grade = gradeRaw && /^[1-6]$/.test(gradeRaw) ? Number(gradeRaw) : undefined;
+  const term = sp.get("term") || undefined;
+  const source = sp.get("source") || undefined;
+  const q = sp.get("q") || undefined;
+  const limitRaw = sp.get("limit")?.trim();
+  const limit = limitRaw && /^\d+$/.test(limitRaw) ? Math.min(200, Math.max(1, Number(limitRaw))) : 100;
+  const wantFacets = sp.get("facets") === "1";
 
-  const items = await listMistakes({ dueOnly: due, category, status, limit: 100 });
-  return NextResponse.json({ items });
+  const [items, facets] = await Promise.all([
+    listMistakes({
+      dueOnly: due,
+      status,
+      errorCategory,
+      domain,
+      category,
+      tag,
+      grade,
+      term,
+      source,
+      q,
+      limit,
+    }),
+    wantFacets ? getMistakeFacets() : Promise.resolve(undefined),
+  ]);
+
+  return NextResponse.json(wantFacets ? { items, facets } : { items });
 }
 
 /**
- * POST /api/mistakes — multipart/form-data { image: File, note?: string, term?: string, source?: string }
- * Validates magic bytes, deduplicates by SHA-256, runs Gemini diagnosis first, and persists atomically.
+ * POST /api/mistakes — multipart/form-data
+ * `{ image: File, note?: string, grade?: string, term?: string, source?: string, checkedItem?: string, skipDedupe?: string }`
+ * Validates magic bytes, deduplicates by SHA-256 (salted with `checkedItem.index` when importing from a full page),
+ * runs Gemini diagnosis first, and persists atomically.
  */
 export async function POST(req: NextRequest) {
   const denied = requirePasscode(req);
@@ -68,7 +108,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "请选择一张错题照片" }, { status: 400 });
   }
   if (file.size > MAX_IMAGE_BYTES) {
-    return NextResponse.json({ error: "图片不能超过 10MB，请重新选择" }, { status: 413 });
+    return NextResponse.json({ error: "图片不能超过 12MB，请重新选择" }, { status: 413 });
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
@@ -87,12 +127,36 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const imageSha256 = createHash("sha256").update(bytes).digest("hex");
-  const existingId = await findMistakeBySha256(imageSha256);
-  if (existingId) {
-    const existing = await getMistake(existingId);
-    if (existing) {
-      return NextResponse.json({ id: existingId, deduplicated: true });
+  const checkedItemRaw = ((form.get("checkedItem") as string | null) ?? "").trim();
+  let checkedItem: Partial<CheckedProblemItem> | undefined;
+  if (checkedItemRaw) {
+    try {
+      const parsed = JSON.parse(checkedItemRaw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return NextResponse.json({ error: "checkedItem 格式无效" }, { status: 400 });
+      }
+      checkedItem = parsed as Partial<CheckedProblemItem>;
+    } catch {
+      return NextResponse.json({ error: "checkedItem JSON 解析失败" }, { status: 400 });
+    }
+  }
+
+  const skipDedupe =
+    form.get("skipDedupe") === "1" || req.nextUrl.searchParams.get("skipDedupe") === "1";
+
+  const hasher = createHash("sha256").update(bytes);
+  if (checkedItem) {
+    hasher.update(`#checked:${String(checkedItem.index ?? "")}:${String(checkedItem.stem_text ?? "")}`);
+  }
+  const imageSha256 = hasher.digest("hex");
+
+  if (!skipDedupe) {
+    const existingId = await findMistakeBySha256(imageSha256);
+    if (existingId) {
+      const existing = await getMistake(existingId);
+      if (existing) {
+        return NextResponse.json({ id: existingId, deduplicated: true });
+      }
     }
   }
 
@@ -101,18 +165,23 @@ export async function POST(req: NextRequest) {
   const note = ((form.get("note") as string | null) ?? "").trim() || undefined;
   const term = ((form.get("term") as string | null) ?? "").trim() || undefined;
   const source = ((form.get("source") as string | null) ?? "").trim() || undefined;
+  const gradeStr = ((form.get("grade") as string | null) ?? "").trim();
+  const grade = gradeStr && /^[1-6]$/.test(gradeStr) ? Number(gradeStr) : undefined;
 
   let storedImage = false;
   try {
     // Run Gemini BEFORE writing storage so failed/timed-out calls leave zero orphan files.
-    const diagnosis = await diagnoseMistake(bytes, mime, note);
+    const diagnosis = await diagnoseMistake(bytes, mime, note, {
+      checkedContext: checkedItem,
+    });
     await putImage(key, bytes, mime);
     storedImage = true;
 
     const id = await createMistake({
       rawImageKey: key,
-      imageSha256,
+      imageSha256: skipDedupe ? undefined : imageSha256,
       diagnosis,
+      grade,
       term,
       source,
     });

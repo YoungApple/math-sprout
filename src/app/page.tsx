@@ -5,7 +5,7 @@ import { SampleMistakeButton } from "@/components/SampleMistakeButton";
 
 export const dynamic = "force-dynamic";
 
-/** Home: today's Ebbinghaus review queue (max 3) + zero-friction onboarding & capture entry. */
+/** Home: today's Ebbinghaus review queue (max 3) + dual-mode homework check & single-problem capture entry. */
 export default async function HomePage() {
   const [due, counts] = await Promise.all([
     listMistakes({ dueOnly: true, limit: 3 }),
@@ -18,19 +18,32 @@ export default async function HomePage() {
         <h1 className="text-xl font-bold">今日消灭错题 🎯</h1>
         <p className="mt-1 text-sm text-white/90">
           {counts.total === 0
-            ? "拍下孩子做错的一道数学题，AI 只启发不剧透，3 道变式题验证真掌握。"
+            ? "拍整页作业让 AI 逐题批改并一键收错题，或拍单道错题体验「只启发不剧透 + 3 道变式闯关」。"
             : counts.due === 0
-              ? "太棒了！今天的复习任务已全部清空，可以去录入新错题啦！"
+              ? "太棒了！今天的复习任务已全部清空，去批改新作业或录入新错题吧！"
               : `今天有 ${counts.due} 道错题等你闯关（本轮展示前 ${due.length} 道，约需 ${Math.max(3, due.length * 3)} 分钟）。`}
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Link href="/capture" className="btn bg-white text-sprout-700">
-            📷 拍照 / 选图录题
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Link href="/capture?mode=check" className="btn bg-white text-sprout-700 shadow-sm hover:bg-sprout-50">
+            📝 作业批改
           </Link>
-          {due.length > 0 && (
-            <Link href={`/mistakes/${due[0].id}`} className="btn bg-white/20 text-white ring-1 ring-white/50">
-              开始闯关 →
+          <Link
+            href="/capture?mode=single"
+            className="btn bg-white/15 text-white ring-1 ring-white/45 hover:bg-white/25"
+          >
+            📷 单题录错
+          </Link>
+          {due.length > 0 ? (
+            <Link
+              href={`/mistakes/${due[0].id}`}
+              className="btn bg-amber-300 text-amber-950 shadow-sm hover:bg-amber-200"
+            >
+              开始挑战 →
             </Link>
+          ) : (
+            counts.total === 0 && (
+              <SampleMistakeButton className="!bg-emerald-950/25 !text-white !ring-white/45 hover:!bg-emerald-950/35" />
+            )
           )}
         </div>
       </section>
@@ -40,10 +53,15 @@ export default async function HomePage() {
           <div>
             <h2 className="font-semibold text-slate-800">👋 第一次使用？手边没试卷也能立即体验</h2>
             <p className="mt-1 text-xs leading-relaxed text-slate-500">
-              一键载入一道三年级高频“差倍审题”易错题，直观体验：启发式三步提示 → 线段图脚手架 → L1/L2/L3 举一反三闯关。
+              无需拍照，即可秒级体验「整页作业逐题批改 + 框选入库」或「三年级高频差倍易错题三步启发闯关」。
             </p>
           </div>
-          <SampleMistakeButton />
+          <div className="flex flex-wrap items-center gap-2">
+            <Link href="/capture?mode=check" className="btn-primary text-sm">
+              📝 去试整页作业批改示例
+            </Link>
+            <SampleMistakeButton className="text-sm" />
+          </div>
         </section>
       )}
 

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import type { InValue } from "@libsql/client";
-import { all, batchWrite, one } from "./db";
-import { sanitizeSvg, type Diagnosis } from "./gemini";
+import { all, batchWrite, one, run } from "./db";
+import { isValidErrorCategory, sanitizeSvg, type Diagnosis, type ErrorCategory } from "./gemini";
 import { isAnswerCorrect } from "./math-answer";
 import {
   applyAttempt,
@@ -14,6 +14,7 @@ import {
   type VariantLevel,
 } from "./review";
 import { deleteImage, imageUrl, putImage } from "./storage";
+import { extractDomain, normalizeCategory, normalizeTerm, type MathDomain, type Term } from "./taxonomy";
 
 export class NotFoundError extends Error {
   constructor(message = "not found") {
@@ -45,7 +46,7 @@ export interface Mistake {
   grade: number | null;
   term: string | null;
   source: string | null;
-  category: string | null;
+  category: string;
   imageUrl: string;
   imageSha256: string | null;
   stemText: string;
@@ -62,6 +63,41 @@ export interface Mistake {
   attempts: Attempt[];
 }
 
+export interface MistakeFilter {
+  dueOnly?: boolean;
+  status?: ReviewStatus;
+  errorCategory?: ErrorCategory | string;
+  domain?: MathDomain | string;
+  category?: string;
+  tag?: string;
+  grade?: number;
+  term?: Term | string;
+  source?: string;
+  q?: string;
+  limit?: number;
+}
+
+export interface MistakeFacets {
+  total: number;
+  due: number;
+  mastered: number;
+  byStatus: Record<ReviewStatus, number>;
+  byErrorCategory: Record<ErrorCategory, number>;
+  byDomain: Record<MathDomain, number>;
+  topCategories: { category: string; count: number }[];
+  topTags: { tag: string; count: number }[];
+  grades: { grade: number; count: number }[];
+  sources: { source: string; count: number }[];
+}
+
+export interface MistakeMetaPatch {
+  grade?: number | null;
+  term?: string | null;
+  source?: string | null;
+  category?: string | null;
+  errorCategory?: ErrorCategory;
+}
+
 type Row = Record<string, unknown>;
 
 export async function findMistakeBySha256(sha256: string): Promise<string | null> {
@@ -70,10 +106,15 @@ export async function findMistakeBySha256(sha256: string): Promise<string | null
   return row ? String(row.id) : null;
 }
 
+function clampGrade(val: number): number {
+  return Math.min(6, Math.max(1, Math.round(val)));
+}
+
 export async function createMistake(input: {
   rawImageKey: string;
   imageSha256?: string;
   diagnosis: Diagnosis;
+  grade?: number;
   term?: string;
   source?: string;
 }): Promise<string> {
@@ -82,6 +123,13 @@ export async function createMistake(input: {
   const review = initialReviewState(now);
   const d = input.diagnosis;
   const cleanSvg = sanitizeSvg(d.svg_diagram) || null;
+  const resolvedGrade =
+    input.grade != null && Number.isFinite(Number(input.grade))
+      ? clampGrade(Number(input.grade))
+      : clampGrade(Number(d.grade) || 3);
+  const resolvedTerm = normalizeTerm(input.term);
+  const resolvedSource = input.source?.trim() || null;
+  const resolvedCategory = normalizeCategory(d.category).full;
 
   const stmts: { sql: string; args?: InValue[] }[] = [
     {
@@ -93,10 +141,10 @@ export async function createMistake(input: {
       args: [
         id,
         now.toISOString(),
-        d.grade,
-        input.term ?? null,
-        input.source ?? null,
-        d.category,
+        resolvedGrade,
+        resolvedTerm,
+        resolvedSource,
+        resolvedCategory,
         input.rawImageKey,
         input.imageSha256 ?? null,
         d.stem_text,
@@ -197,13 +245,13 @@ export async function createSampleMistake(): Promise<string> {
     rawImageKey: SAMPLE_IMAGE_KEY,
     imageSha256: sha,
     diagnosis: SAMPLE_DIAGNOSIS,
+    grade: 3,
+    term: "上学期",
     source: "示例错题 · 三年级易错审题",
   });
 }
 
-export async function listMistakes(
-  opts: { dueOnly?: boolean; category?: string; status?: ReviewStatus; limit?: number } = {},
-): Promise<Mistake[]> {
+export async function listMistakes(opts: MistakeFilter = {}): Promise<Mistake[]> {
   const now = new Date();
   const clauses: string[] = [];
   const args: InValue[] = [];
@@ -216,23 +264,247 @@ export async function listMistakes(
     clauses.push(`review_status = ?`);
     args.push(opts.status);
   }
-  if (opts.category) {
-    if (opts.category === "未分类") {
-      clauses.push(`(category IS NULL OR category = '')`);
+  if (opts.errorCategory?.trim()) {
+    clauses.push(`error_category = ?`);
+    args.push(opts.errorCategory.trim());
+  }
+  if (opts.grade != null && Number.isFinite(Number(opts.grade))) {
+    clauses.push(`grade = ?`);
+    args.push(Math.round(Number(opts.grade)));
+  }
+  if (opts.source?.trim()) {
+    clauses.push(`source = ?`);
+    args.push(opts.source.trim());
+  }
+
+  const domainFilter = opts.domain?.trim() || undefined;
+  const categoryFilter = opts.category?.trim() || undefined;
+  const tagFilter = opts.tag?.trim() || undefined;
+  const termFilterRaw = opts.term?.trim() || undefined;
+  const qFilter = opts.q?.trim().toLowerCase() || undefined;
+  const limit = opts.limit ?? 50;
+
+  const needsPostFilter = Boolean(domainFilter || categoryFilter || tagFilter || termFilterRaw || qFilter);
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+
+  let rows: Row[];
+  if (!needsPostFilter) {
+    rows = await all<Row>(
+      `SELECT * FROM mistakes ${where} ORDER BY next_review_at ASC, created_at DESC LIMIT ?`,
+      [...args, limit],
+    );
+  } else {
+    const candidates = await all<Row>(
+      `SELECT * FROM mistakes ${where} ORDER BY next_review_at ASC, created_at DESC`,
+      args,
+    );
+    const normalizedCategoryFilter =
+      categoryFilter && categoryFilter !== "未分类" ? normalizeCategory(categoryFilter).full : null;
+    const normalizedTermFilter = termFilterRaw ? normalizeTerm(termFilterRaw) : null;
+    const tagLower = tagFilter?.toLowerCase();
+
+    rows = candidates
+      .filter((r) => {
+        const rawCat = (r.category as string | null) ?? null;
+        const normCat = normalizeCategory(rawCat).full;
+
+        if (domainFilter && extractDomain(rawCat) !== domainFilter) {
+          return false;
+        }
+        if (categoryFilter) {
+          if (categoryFilter === "未分类") {
+            if (rawCat && rawCat.trim() !== "" && rawCat.trim() !== "未分类") return false;
+          } else if (normCat !== normalizedCategoryFilter && (rawCat ?? "").trim() !== categoryFilter) {
+            return false;
+          }
+        }
+        if (termFilterRaw) {
+          const rowTerm = normalizeTerm((r.term as string | null) ?? null);
+          if (normalizedTermFilter) {
+            if (rowTerm !== normalizedTermFilter) return false;
+          } else if (((r.term as string | null) ?? "").trim() !== termFilterRaw) {
+            return false;
+          }
+        }
+        const tags = safeParseJsonArray(r.knowledge_points);
+        if (tagLower && !tags.some((t) => t.trim().toLowerCase() === tagLower)) {
+          return false;
+        }
+        if (qFilter) {
+          // Literal substring check in JS — 100% immune to SQL LIKE % and _ wildcard injection
+          const haystacks = [
+            String(r.stem_text ?? ""),
+            String(r.root_cause ?? ""),
+            normCat,
+            String(rawCat ?? ""),
+            String(r.source ?? ""),
+            ...tags,
+          ];
+          if (!haystacks.some((h) => h.toLowerCase().includes(qFilter))) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .slice(0, limit);
+  }
+
+  return hydrateMany(rows, now);
+}
+
+export async function getMistakeFacets(): Promise<MistakeFacets> {
+  const nowIso = new Date().toISOString();
+  const rows = await all<Row>(
+    `SELECT grade, term, source, category, error_category, knowledge_points, review_status, next_review_at
+       FROM mistakes`,
+  );
+
+  const byStatus: Record<ReviewStatus, number> = {
+    PENDING: 0,
+    CONSOLIDATING: 0,
+    MASTERED: 0,
+    RELAPSED: 0,
+  };
+  const byErrorCategory: Record<ErrorCategory, number> = {
+    EXECUTION_ERROR: 0,
+    PERCEPTION_ERROR: 0,
+    CONCEPT_CONFUSION: 0,
+    MODELING_GAP: 0,
+  };
+  const byDomain: Record<MathDomain, number> = {
+    数与代数: 0,
+    图形与几何: 0,
+    统计与概率: 0,
+    综合与实践: 0,
+  };
+
+  const categoryCounts = new Map<string, number>();
+  const tagCounts = new Map<string, number>();
+  const gradeCounts = new Map<number, number>();
+  const sourceCounts = new Map<string, number>();
+
+  let due = 0;
+  let mastered = 0;
+
+  for (const r of rows) {
+    const status = ((r.review_status as ReviewStatus) || "PENDING") as ReviewStatus;
+    if (status in byStatus) {
+      byStatus[status]++;
     } else {
-      clauses.push(`category = ?`);
-      args.push(opts.category);
+      byStatus.PENDING++;
+    }
+    if (status === "MASTERED") {
+      mastered++;
+    }
+    const nextReviewAt = String(r.next_review_at ?? "");
+    if (!nextReviewAt || nextReviewAt <= nowIso) {
+      due++;
+    }
+
+    const errCat = String(r.error_category ?? "");
+    if (isValidErrorCategory(errCat)) {
+      byErrorCategory[errCat]++;
+    }
+
+    const normCat = normalizeCategory((r.category as string | null) ?? null);
+    byDomain[normCat.domain] = (byDomain[normCat.domain] ?? 0) + 1;
+    categoryCounts.set(normCat.full, (categoryCounts.get(normCat.full) ?? 0) + 1);
+
+    const seenTagsInRow = new Set<string>();
+    for (const rawTag of safeParseJsonArray(r.knowledge_points)) {
+      const t = rawTag.trim();
+      if (t && !seenTagsInRow.has(t)) {
+        seenTagsInRow.add(t);
+        tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1);
+      }
+    }
+
+    if (r.grade != null && Number.isFinite(Number(r.grade))) {
+      const g = Math.round(Number(r.grade));
+      gradeCounts.set(g, (gradeCounts.get(g) ?? 0) + 1);
+    }
+
+    const src = String(r.source ?? "").trim();
+    if (src) {
+      sourceCounts.set(src, (sourceCounts.get(src) ?? 0) + 1);
     }
   }
 
-  const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-  args.push(opts.limit ?? 50);
+  const topCategories = [...categoryCounts.entries()]
+    .map(([category, count]) => ({ category, count }))
+    .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category, "zh-CN"))
+    .slice(0, 20);
 
-  const rows = await all<Row>(
-    `SELECT * FROM mistakes ${where} ORDER BY next_review_at ASC, created_at DESC LIMIT ?`,
-    args,
-  );
-  return hydrateMany(rows, now);
+  const topTags = [...tagCounts.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, "zh-CN"))
+    .slice(0, 24);
+
+  const grades = [...gradeCounts.entries()]
+    .map(([grade, count]) => ({ grade, count }))
+    .sort((a, b) => a.grade - b.grade);
+
+  const sources = [...sourceCounts.entries()]
+    .map(([source, count]) => ({ source, count }))
+    .sort((a, b) => b.count - a.count || a.source.localeCompare(b.source, "zh-CN"))
+    .slice(0, 20);
+
+  return {
+    total: rows.length,
+    due,
+    mastered,
+    byStatus,
+    byErrorCategory,
+    byDomain,
+    topCategories,
+    topTags,
+    grades,
+    sources,
+  };
+}
+
+export async function updateMistakeMeta(id: string, patch: MistakeMetaPatch): Promise<Mistake> {
+  const existing = await one<Row>(`SELECT id FROM mistakes WHERE id = ?`, [id]);
+  if (!existing) throw new NotFoundError("mistake not found");
+
+  const sets: string[] = [];
+  const args: InValue[] = [];
+
+  if (patch.grade !== undefined) {
+    if (patch.grade === null) {
+      sets.push(`grade = NULL`);
+    } else if (Number.isFinite(Number(patch.grade))) {
+      sets.push(`grade = ?`);
+      args.push(clampGrade(Number(patch.grade)));
+    }
+  }
+  if (patch.term !== undefined) {
+    const normTerm = normalizeTerm(patch.term);
+    sets.push(`term = ?`);
+    args.push(normTerm);
+  }
+  if (patch.source !== undefined) {
+    const cleanSource = patch.source == null ? null : patch.source.trim() || null;
+    sets.push(`source = ?`);
+    args.push(cleanSource);
+  }
+  if (patch.category !== undefined) {
+    const cleanCategory = normalizeCategory(patch.category).full;
+    sets.push(`category = ?`);
+    args.push(cleanCategory);
+  }
+  if (patch.errorCategory !== undefined && isValidErrorCategory(patch.errorCategory)) {
+    sets.push(`error_category = ?`);
+    args.push(patch.errorCategory);
+  }
+
+  if (sets.length > 0) {
+    await run(`UPDATE mistakes SET ${sets.join(", ")} WHERE id = ?`, [...args, id]);
+  }
+
+  const updated = await getMistake(id);
+  if (!updated) throw new NotFoundError("mistake not found");
+  return updated;
 }
 
 export async function countMistakes(): Promise<{ total: number; due: number; mastered: number }> {
@@ -335,7 +607,7 @@ export async function recordAttempt(
     ...m.attempts,
     {
       id: attemptId,
-      variantId,
+      variantId: v.id,
       answeredAt: now.toISOString(),
       userAnswer,
       isCorrect,
@@ -405,14 +677,15 @@ async function hydrateMany(rows: Row[], now: Date): Promise<Mistake[]> {
     };
     const progress = deriveProgress(review, variants, attempts, now);
     const rawSvg = (r.svg_diagram as string | null) ?? null;
+    const rawTerm = (r.term as string | null) ?? null;
 
     return {
       id,
       createdAt: String(r.created_at),
       grade: r.grade == null ? null : Number(r.grade),
-      term: (r.term as string | null) ?? null,
+      term: normalizeTerm(rawTerm) ?? (rawTerm?.trim() || null),
       source: (r.source as string | null) ?? null,
-      category: (r.category as string | null) ?? null,
+      category: normalizeCategory((r.category as string | null) ?? null).full,
       imageUrl: imageUrl(String(r.raw_image_key)),
       imageSha256: (r.image_sha256 as string | null) ?? null,
       stemText: String(r.stem_text ?? ""),
@@ -454,27 +727,39 @@ function buildSampleWorksheetPng(): Buffer {
     const rowOffset = y * rowStride;
     raw[rowOffset] = 0; // PNG filter type 0 (None)
     for (let x = 0; x < width; x++) {
-      let r = 253, g = 251, b = 245; // warm notebook cream
+      let r = 253,
+        g = 251,
+        b = 245; // warm notebook cream
       // Horizontal notebook lines + left margin line
       if (y % 28 === 27) {
-        r = 219; g = 234; b = 254;
+        r = 219;
+        g = 234;
+        b = 254;
       }
       if (x === 32) {
-        r = 252; g = 165; b = 165;
+        r = 252;
+        g = 165;
+        b = 165;
       }
       // Simulated printed problem bars
       if ((y >= 34 && y <= 40 && x >= 48 && x <= 284) || (y >= 62 && y <= 68 && x >= 48 && x <= 220)) {
-        r = 71; g = 85; b = 105;
+        r = 71;
+        g = 85;
+        b = 105;
       }
       // Simulated child's handwritten equation bar
       if (y >= 98 && y <= 104 && x >= 56 && x <= 196) {
-        r = 37; g = 99; b = 235;
+        r = 37;
+        g = 99;
+        b = 235;
       }
       // Red teacher cross mark "X"
-      const dx1 = Math.abs((x - 245) - (y - 102));
-      const dx2 = Math.abs((x - 245) + (y - 102));
+      const dx1 = Math.abs(x - 245 - (y - 102));
+      const dx2 = Math.abs(x - 245 + (y - 102));
       if (x >= 229 && x <= 261 && y >= 86 && y <= 118 && (dx1 <= 2 || dx2 <= 2)) {
-        r = 225; g = 29; b = 72;
+        r = 225;
+        g = 29;
+        b = 72;
       }
       const px = rowOffset + 1 + x * 3;
       raw[px] = r;

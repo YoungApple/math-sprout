@@ -35,12 +35,12 @@ export function TopNav() {
             <Link
               href="/capture"
               className={`rounded-lg px-3 py-1.5 font-semibold transition ${
-                pathname === "/capture"
+                pathname.startsWith("/capture")
                   ? "bg-sprout-700 text-white ring-2 ring-sprout-500/30"
                   : "bg-sprout-600 text-white hover:bg-sprout-700"
               }`}
             >
-              📷 录题
+              📝 批改/录题
             </Link>
           </div>
         )}

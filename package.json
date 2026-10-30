@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx tests/math-answer.test.ts && node --import tsx tests/review.test.ts && node --import tsx tests/gemini.test.ts && node --import tsx tests/repo-vertical.test.ts"
+    "test": "node --import tsx tests/math-answer.test.ts && node --import tsx tests/review.test.ts && node --import tsx tests/gemini.test.ts && node --import tsx tests/repo-vertical.test.ts && node --import tsx tests/homework-check.test.ts && node --import tsx tests/categorization.test.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.14.0",

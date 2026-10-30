@@ -1,11 +1,14 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getMistake, getNextDueMistakeId } from "@/lib/repo";
 import { formatDateTimeZh } from "@/lib/review";
+import { normalizeCategory, normalizeTerm } from "@/lib/taxonomy";
 import { MathText } from "@/components/MathText";
 import { StatusBadge, ERROR_LABELS } from "@/components/StatusBadge";
 import { HintStepper } from "@/components/HintStepper";
 import { VariantQuiz } from "@/components/VariantQuiz";
 import { DeleteMistakeButton } from "@/components/DeleteMistakeButton";
+import { MistakeMetaEditor } from "@/components/MistakeMetaEditor";
 
 export const dynamic = "force-dynamic";
 
@@ -18,18 +21,51 @@ export default async function MistakePage({ params }: { params: Promise<{ id: st
   if (!m) notFound();
 
   const parentOpenByDefault = m.review.status === "MASTERED" && !m.progress.isDue;
+  const normalizedCategory = m.category ? normalizeCategory(m.category).full : null;
+  const cleanTerm = normalizeTerm(m.term) ?? m.term;
+  const gradeTermLabel =
+    m.grade && cleanTerm ? `${m.grade}年级${cleanTerm}` : m.grade ? `${m.grade}年级` : cleanTerm ? cleanTerm : null;
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-        <StatusBadge status={m.review.status} />
-        {m.grade && <span>{m.grade} 年级</span>}
-        {m.category && <span>· {m.category}</span>}
-        {m.source && <span>· {m.source}</span>}
-        <span className="ml-auto flex items-center gap-2">
-          <span>{formatDateTimeZh(m.createdAt)}</span>
-          <DeleteMistakeButton mistakeId={m.id} />
-        </span>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <StatusBadge status={m.review.status} />
+          {gradeTermLabel && (
+            <span className="rounded-full bg-sprout-50 px-2.5 py-0.5 font-medium text-sprout-700">
+              {gradeTermLabel}
+            </span>
+          )}
+          {normalizedCategory && (
+            <Link
+              href={`/mistakes?category=${encodeURIComponent(normalizedCategory)}`}
+              className="rounded-full bg-slate-100 px-2.5 py-0.5 text-slate-600 hover:bg-sprout-50 hover:text-sprout-700"
+            >
+              {normalizedCategory}
+            </Link>
+          )}
+          {m.source && (
+            <Link
+              href={`/mistakes?source=${encodeURIComponent(m.source)}`}
+              className="rounded-full bg-amber-50 px-2.5 py-0.5 text-amber-800 hover:bg-amber-100"
+            >
+              📄 {m.source}
+            </Link>
+          )}
+          <span className="ml-auto flex items-center gap-2">
+            <span>{formatDateTimeZh(m.createdAt)}</span>
+            <DeleteMistakeButton mistakeId={m.id} />
+          </span>
+        </div>
+
+        <MistakeMetaEditor
+          mistakeId={m.id}
+          initialGrade={m.grade}
+          initialTerm={m.term}
+          initialErrorCategory={m.errorCategory}
+          initialCategory={m.category}
+          initialSource={m.source}
+        />
       </div>
 
       <section className="card space-y-3">
@@ -58,9 +94,13 @@ export default async function MistakePage({ params }: { params: Promise<{ id: st
           {m.knowledgePoints.length > 0 && (
             <div className="flex flex-wrap gap-1.5 pt-1">
               {m.knowledgePoints.map((k) => (
-                <span key={k} className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                <Link
+                  key={k}
+                  href={`/mistakes?tag=${encodeURIComponent(k)}`}
+                  className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600 transition hover:bg-sprout-100 hover:text-sprout-700"
+                >
                   #{k}
-                </span>
+                </Link>
               ))}
             </div>
           )}
