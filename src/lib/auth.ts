@@ -110,8 +110,13 @@ function hmacSha256Hex(keyStr: string, msgStr: string): string {
   return hex;
 }
 
+/** Normalizes full-width ASCII (e.g. Chinese IME `２０２６` -> `2026`) and trims surrounding whitespace. */
+export function normalizePasscode(raw: string): string {
+  return raw.normalize("NFKC").trim();
+}
+
 export function deriveSessionToken(passcode: string): string {
-  return `s1.${hmacSha256Hex(passcode, SESSION_TOKEN_CONTEXT)}`;
+  return `s1.${hmacSha256Hex(normalizePasscode(passcode), SESSION_TOKEN_CONTEXT)}`;
 }
 
 /** Constant-time UTF-8 string comparison without leaking secret length via early return. */
@@ -129,7 +134,8 @@ export function constantTimeEqual(a: string | undefined | null, b: string): bool
 }
 
 export function verifyPasscode(candidate: string | undefined | null, expected: string): boolean {
-  return constantTimeEqual(candidate, expected);
+  if (typeof candidate !== "string") return false;
+  return constantTimeEqual(normalizePasscode(candidate), normalizePasscode(expected));
 }
 
 /**
@@ -137,7 +143,7 @@ export function verifyPasscode(candidate: string | undefined | null, expected: s
  * (or legacy raw passcode cookie) OR `x-family-passcode` header in constant time.
  */
 export function requirePasscode(req: NextRequest): NextResponse | null {
-  const expected = process.env.FAMILY_PASSCODE;
+  const expected = process.env.FAMILY_PASSCODE?.trim();
   if (!expected) return null;
 
   const header = req.headers.get("x-family-passcode");
@@ -157,15 +163,33 @@ export function requirePasscode(req: NextRequest): NextResponse | null {
 }
 
 /**
- * Sets the 1-year HttpOnly family session cookie, deriving `Secure` from actual
- * request protocol (`x-forwarded-proto` or `req.nextUrl.protocol`) rather than `NODE_ENV`
- * so plain-HTTP dev/LAN previews do not drop cookies in an infinite `/login` loop.
+ * Determines whether the browser itself is on an `https:` page:
+ * prefers browser-supplied `Origin` / `Referer` scheme (so a proxy injecting `X-Forwarded-Proto: https`
+ * in front of an `http://` browser URL cannot set a `Secure` cookie that Chrome silently drops),
+ * then falls back to `x-forwarded-proto` and `req.nextUrl.protocol`.
  */
-export function issueSessionCookie(res: NextResponse, req: NextRequest, passcode: string): void {
+function isBrowserHttps(req: NextRequest): boolean {
+  const origin = req.headers.get("origin")?.trim().toLowerCase();
+  if (origin?.startsWith("http://")) return false;
+  if (origin?.startsWith("https://")) return true;
+
+  const referer = req.headers.get("referer")?.trim().toLowerCase();
+  if (referer?.startsWith("http://")) return false;
+  if (referer?.startsWith("https://")) return true;
+
   const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
   const proto = forwardedProto ?? req.nextUrl.protocol.replace(":", "").toLowerCase();
-  const secure = proto === "https";
-  const value = passcode ? deriveSessionToken(passcode) : "";
+  return proto === "https";
+}
+
+/**
+ * Sets the 1-year HttpOnly family session cookie, deriving `Secure` from the browser's
+ * actual protocol so plain-HTTP / proxied previews never drop cookies in a `/login` loop.
+ */
+export function issueSessionCookie(res: NextResponse, req: NextRequest, passcode: string): void {
+  const secure = isBrowserHttps(req);
+  const normalized = normalizePasscode(passcode);
+  const value = normalized ? deriveSessionToken(normalized) : "";
 
   res.cookies.set(SESSION_COOKIE_NAME, value, {
     httpOnly: true,

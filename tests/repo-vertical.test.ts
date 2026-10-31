@@ -6,7 +6,7 @@ import path from "node:path";
 import { NextRequest, NextResponse } from "next/server";
 import { all, one, resetDbForTests } from "../src/lib/db";
 import { detectImageMime, putImage, getImage, deleteImage, imageUrl } from "../src/lib/storage";
-import { requirePasscode, issueSessionCookie, sanitizeNextPath } from "../src/lib/auth";
+import { requirePasscode, issueSessionCookie, sanitizeNextPath, verifyPasscode } from "../src/lib/auth";
 import {
   NotFoundError,
   createMistake,
@@ -125,6 +125,26 @@ test("auth protocol-aware Secure cookie (plain HTTP preview vs prod HTTPS), pass
     const httpsRes = NextResponse.json({ ok: true });
     issueSessionCookie(httpsRes, httpsReq, "2026");
     assert.ok(/\bSecure\b/i.test(httpsRes.headers.get("set-cookie") ?? ""), "HTTPS proxy cookie must be Secure");
+
+    // 2b. HTTP browser Origin behind a proxy injecting x-forwarded-proto: https MUST NOT set Secure!
+    const proxiedHttpReq = new NextRequest("http://127.0.0.1:8787/api/login", {
+      method: "POST",
+      headers: {
+        origin: "http://preview.example.internal:8787",
+        "x-forwarded-proto": "https",
+      },
+    });
+    const proxiedHttpRes = NextResponse.json({ ok: true });
+    issueSessionCookie(proxiedHttpRes, proxiedHttpReq, "2026");
+    assert.ok(
+      !/\bSecure\b/i.test(proxiedHttpRes.headers.get("set-cookie") ?? ""),
+      "HTTP browser Origin must NOT receive Secure cookie even when proxy sends x-forwarded-proto: https",
+    );
+
+    // 2c. Full-width Chinese IME digits and surrounding whitespace normalize cleanly
+    assert.equal(verifyPasscode(" ２０２６ \n", "2026"), true);
+    assert.equal(verifyPasscode("2026 ", " 2026"), true);
+    assert.equal(verifyPasscode("２０２７", "2026"), false);
 
     // 3. Header auth & rejection
     const headerReq = new NextRequest("http://127.0.0.1:8787/api/mistakes", {
